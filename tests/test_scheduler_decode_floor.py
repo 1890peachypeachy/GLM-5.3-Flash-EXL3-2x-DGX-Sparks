@@ -447,71 +447,89 @@ class FairTests(unittest.TestCase):
 
 
 def installation_tests():
+    """Installer contract for decode-floor v7 (#283; integrates #246/#221/#180).
+
+    Deployed and fixture producers migrate to the same v7 bytes as a fresh install,
+    a second run is a verified no-op, and unsupported (v3/v4), drifted, duplicated,
+    marker-only or unmarked inputs are refused without writing (#180's fail-closed
+    contract). This is a self-contained subset of the 13-producer / 14-refusal
+    matrix run for #283 (summarized in the #283 integration PR).
+    """
     src = next((p for p in [Path(os.environ.get('GLM53_SCHEDULER_PY_SRC', '/missing')),
                            Path('/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py'),
                            Path('/tmp/sched-live.py')] if p.is_file()), None)
     if src is None:
         raise SystemExit('Set GLM53_SCHEDULER_PY_SRC to the pinned scheduler source')
-    clean = src.read_text()
-    for marker, fn in [(mod.MARK_V5, mod.unpatch_v5), (mod.MARK_V4, mod.unpatch_v4), (mod.MARK_V3, mod.unpatch_v3), (mod.MARK_V2, mod.unpatch_v2)]:
-        if marker in clean:
-            clean = fn(clean)
-    if mod.V1_HELPER_START in clean:
-        clean = mod.unpatch_v1(clean)
-    with tempfile.TemporaryDirectory() as temp:
-        for version in (0, 1, 2, 3, 4):
-            text = clean
-            if version:
-                marker = mod.MARK if version == 1 else getattr(mod, f'MARK_V{version}')
-                helper = ('\ndef _glm53_mixed_prefill_policy(running, current):\n    return 0\n\n' if version == 1 else
-                          f'\nclass _Glm53MixedPrefill:  {marker}\n    pass\n\n')
-                needle = 'from vllm.compilation.cuda_graph import CUDAGraphStat\n'
-                text = text.replace(needle, helper + needle, 1)
-                if version == 4:
-                    for new, old, label in mod.V4_PAIRS:
-                        text = mod.replace_once(text, old, new, label)
-                else:
-                    names = ['RUNNING', 'WAITING'] if version == 1 else ['BEGIN', 'OBS', 'RUNNING', 'WAITING', 'ALIGN', 'RUNNING_MAMBA', 'WAITING_MAMBA']
-                    if version == 3:
-                        names.append('FIN')
-                    for name in names:
-                        old = mod.V3_FIN_OLD if name == 'FIN' else getattr(mod, name + '_OLD')
-                        text = mod.replace_once(text, old, getattr(mod, f'V{version}_{name}_NEW'), name)
-            target = Path(temp) / f'scheduler_v{version}.py'
-            target.write_text(text)
-            env = {**os.environ, 'GLM53_SCHEDULER_PY': str(target), 'GLM53_MIXED_PREFILL_CHUNK': 'skip'}
-            subprocess.run([sys.executable, str(PATCH)], env=env, check=True, capture_output=True)
-            installed = target.read_text()
-            compile(installed, str(target), 'exec')
-            assert mod.MARK_V5 in installed and mod.MARK_V4 not in installed and mod.MARK_V3 not in installed and mod.MARK_V2 not in installed
-            subprocess.run([sys.executable, str(PATCH)], env=env, check=True, capture_output=True)
-            assert target.read_text() == installed
-            # Marker alone must not suppress validation or overwrite source drift.
-            drifted = installed.replace('_GLM53_MIXED.finish_step(self, scheduler_output)', '_GLM53_MIXED.finish_step_changed(self, scheduler_output)', 1)
-            target.write_text(drifted)
-            result = subprocess.run([sys.executable, str(PATCH)], env=env, capture_output=True)
-            assert result.returncode != 0 and target.read_text() == drifted
-        # A v5 helper installed before the prefill-priority change must migrate
-        # in place to the current layout, byte-identical to a fresh install.
-        legacy = (installed
-                  .replace(mod.PRIORITY_RANK_PREFIX, mod.LEGACY_RANK_PREFIX, 1)
-                  .replace(mod.PRIORITY_CANDIDATES, mod.LEGACY_CANDIDATES, 1))
-        assert mod.PRIORITY_MARK not in legacy and mod.MARK_V5 in legacy
-        target = Path(temp) / 'scheduler_v5_legacy.py'
-        target.write_text(legacy)
+    image = src.read_text()
+    found = mod._identify(image)
+    clean = image if found is None else found[1]
+    assert mod.MARK_V7 not in clean and mod.CLASS_HEAD not in clean
+
+    fixtures = ROOT / 'tests' / 'fixtures'
+
+    def load_fixture(name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # inspect.getsource needs the module registered
+        spec.loader.exec_module(module)
+        return module
+
+    legacy = load_fixture('legacy_scheduler_helpers', fixtures / 'legacy_scheduler_helpers.py')
+
+    def legacy_producer(version):
+        text = clean.replace(mod.NEEDLE, legacy.HELPERS[version] + mod.NEEDLE, 1)
+        for new, old, label in (mod.V1_PAIRS if version == 1 else mod.V2_PAIRS):
+            text = mod.replace_once(text, old, new, label)
+        return text
+
+    producers = {'pristine': clean, 'v1': legacy_producer(1), 'v2': legacy_producer(2)}
+    if found is not None:
+        producers[found[0]] = image
+    for ident, fname in (('v5-main', 'v5_main_d5713ec6.py'), ('v5-priority', 'v5_priority_763bd30e.py')):
+        producers[ident] = load_fixture('producer_' + ident.replace('-', '_'),
+                                        fixtures / 'decode_floor_producers' / fname).apply_v5(clean)
+
+    def run(text, temp):
+        target = Path(temp) / 'scheduler.py'
+        target.write_text(text)
         env = {**os.environ, 'GLM53_SCHEDULER_PY': str(target), 'GLM53_MIXED_PREFILL_CHUNK': 'skip'}
-        subprocess.run([sys.executable, str(PATCH)], env=env, check=True, capture_output=True)
-        assert target.read_text() == installed
-        subprocess.run([sys.executable, str(PATCH)], env=env, check=True, capture_output=True)
-        assert target.read_text() == installed
-        # A drifted migration anchor fails closed: no partial write even when
-        # the first of the two anchors still matches.
-        drifted = legacy.replace('self._candidates = self._rank_prefills(prefills)\n',
-                                 'self._candidates = self._rank_prefills(prefills)  # drift\n', 1)
-        target.write_text(drifted)
-        result = subprocess.run([sys.executable, str(PATCH)], env=env, capture_output=True)
-        assert result.returncode != 0 and target.read_text() == drifted
-        return installed
+        result = subprocess.run([sys.executable, str(PATCH)], env=env, capture_output=True, text=True)
+        return result, target.read_text()
+
+    installed = None
+    with tempfile.TemporaryDirectory() as temp:
+        for ident, text in producers.items():
+            result, after = run(text, temp)
+            assert result.returncode == 0, (ident, result.stderr)
+            assert f'from {ident}' in result.stdout, (ident, result.stdout)
+            compile(after, ident, 'exec')
+            assert mod.MARK_V7 in after, ident
+            for older in (mod.MARK_V2, mod.MARK_V3, mod.MARK_V4, mod.MARK_V5, mod.MARK_V6):
+                assert older not in after, (ident, older)
+            if installed is None:
+                installed = after
+            assert after == installed, f'{ident} did not migrate to the fresh-install bytes'
+            again, repeat = run(after, temp)
+            assert again.returncode == 0 and repeat == after and 'already present' in again.stdout, ident
+
+        v5 = producers['v5-priority']
+        refused = {
+            'v3-marker': v5.replace(mod.MARK_V5, mod.MARK_V3),
+            'v4-marker': v5.replace(mod.MARK_V5, mod.MARK_V4),
+            'v5-hook-drift': v5.replace('_GLM53_MIXED.finish_step(self, scheduler_output)',
+                                        '_GLM53_MIXED.finish_step_changed(self, scheduler_output)', 1),
+            'v5-duplicate-helper': v5.replace(mod.CLASS_HEAD, mod.CLASS_HEAD + ' pass\n\n' + mod.CLASS_HEAD, 1),
+            'v5-marker-only': clean.replace(mod.NEEDLE, mod.MARK_V5 + '\n' + mod.NEEDLE, 1),
+            'v7-hook-drift': installed.replace('_GLM53_MIXED.note_alloc_failed(request)  # [glm53-decode-floor:v7]',
+                                               '_GLM53_MIXED.note_scheduled(request, 0)  # [glm53-decode-floor:v7]', 1),
+            'v7-duplicate-helper': installed.replace(mod.CLASS_HEAD, mod.CLASS_HEAD + ' pass\n\n' + mod.CLASS_HEAD, 1),
+            'unmarked-helper': clean.replace(mod.NEEDLE, '\n\nclass _Glm53MixedPrefill:\n    pass\n' + mod.NEEDLE, 1),
+        }
+        for case, text in refused.items():
+            assert text != installed and text != v5, f'{case}: mutation did not apply'
+            result, after = run(text, temp)
+            assert result.returncode != 0 and after == text, f'{case} was not refused without writing'
+    return installed
 
 
 def main():
