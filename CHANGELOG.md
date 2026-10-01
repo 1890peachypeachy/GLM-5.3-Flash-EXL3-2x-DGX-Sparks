@@ -262,9 +262,8 @@ There were no git tags for 1.0.0–1.4.0; 1.5.0 is the first cut named as a rele
     helpers are refused without writing.
   - `overlay/patch_mamba_align_chunking.py` accepts decode-floor v7 as well
     as v5.
-  - #180's concurrency canary (`tests/check_concurrent_agents.py`,
-    `docs/concurrent-agents.md`) and its CPU progress regressions
-    (`tests/test_prefill_concurrency.py`) land with it.
+  - #180's concurrency canary (`tests/check_concurrent_agents.py`) and its CPU
+    progress regressions (`tests/test_prefill_concurrency.py`) land with it.
 
   Qualified live on a TP2 pair with a pre-registered baseline → candidate →
   baseline run (installed scheduler `97c90a18…`, 2026-09-30):
