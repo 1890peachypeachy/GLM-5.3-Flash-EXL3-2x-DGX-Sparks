@@ -135,7 +135,7 @@ def main():
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     url = urlsplit(args.base_url)
-    if url.scheme not in ("http", "https") or not url.hostname or url.username or url.query or url.fragment:
+    if url.scheme not in ("http", "https") or not url.hostname or url.username is not None or url.password is not None or url.query or url.fragment:
         parser.error("base URL must be HTTP(S) without credentials, query, or fragment")
     if args.filler_words < 1 or args.long_max_tokens < 128 or args.timeout <= 0:
         parser.error("positive filler/timeout and at least 128 long-request tokens required")

@@ -1312,7 +1312,10 @@ def _unpatch(text: str, name, marker, head_token, pairs, sha=None, length=None, 
     if not _followed_by_anchor(text, start + n):
         _refuse(f"{name}: unexpected text between the helper and its anchor")
     clean = text[:start] + text[start + n:]
-    if marker in clean or head_token in clean:
+    # Fail closed on mixed state: after removing this identity, no decode-floor
+    # marker of any version and no helper definition of either form may remain.
+    if (marker in clean or head_token in clean or MARK.rstrip("]") in clean
+            or CLASS_HEAD in clean or V1_HELPER_START in clean):
         _refuse(f"{name}: marker or helper definition left after unpatch")
     return clean, start, span
 

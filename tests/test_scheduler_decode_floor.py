@@ -575,6 +575,9 @@ def installation_tests():
                                                '_GLM53_MIXED.note_scheduled(request, 0)  # [glm53-decode-floor:v7]', 1),
             'v7-duplicate-helper': installed.replace(mod.CLASS_HEAD, mod.CLASS_HEAD + ' pass\n\n' + mod.CLASS_HEAD, 1),
             'unmarked-helper': clean.replace(mod.NEEDLE, '\n\nclass _Glm53MixedPrefill:\n    pass\n' + mod.NEEDLE, 1),
+            # Mixed state: a canonical v7 plus a leftover older marker must not verify.
+            'v7-plus-v5-marker': mod.MARK_V5 + '\n' + installed,
+            'v7-plus-v1-marker': installed + '\n' + mod.MARK + '\n',
         }
         for case, text in refused.items():
             assert text != installed and text != v5, f'{case}: mutation did not apply'
