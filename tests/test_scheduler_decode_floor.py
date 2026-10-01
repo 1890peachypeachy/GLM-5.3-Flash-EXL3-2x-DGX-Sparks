@@ -385,6 +385,37 @@ class FairTests(unittest.TestCase):
         self.p.note_scheduled(self.b, 0)
         self.assertEqual(self.p.cap_for(self.s, c), 256)
 
+    def test_native_kv_refusal_keeps_waiter_retryable_and_peer_progressing(self):
+        # #246: a selected waiter that vLLM refuses KV must not stall a runnable
+        # prefill, must stay a candidate, and must recover once memory frees.
+        c = Req('C')
+        self.s.waiting.append(c)
+        self.s.refresh()
+        self.assertEqual(self.p.cap_for(self.s, self.b), 256)
+        self.assertEqual(self.p.cap_for(self.s, c), 0)
+        self.p.note_alloc_failed(self.b)                      # native refusal (new_blocks is None)
+        cap_c = self.p.cap_for(self.s, c)
+        self.assertGreater(cap_c, 0)                          # the runnable peer progresses in the same step
+        self.complete(self.submit({'A': 8, 'C': cap_c}), 0.2)
+        self.p.begin_step(self.s)                             # next step: refusal evidence lasts one step
+        self.assertEqual(self.p._refused_prev, {'B'})
+        self.assertNotIn('B', self.p.selected)                # not preselected right after its refusal
+        self.assertIn('B', [r.request_id for r in self.p._candidates])  # but still queued for retry
+        served = {'B': 0, 'C': cap_c}
+        for _ in range(20):                                   # memory has freed: no further refusals
+            counts = {'A': 8}
+            for r in (self.b, c):
+                cap = self.p.cap_for(self.s, r)
+                if cap:
+                    counts[r.request_id] = cap
+                    served[r.request_id] += cap
+            self.complete(self.submit(counts), 0.2)
+            self.p.begin_step(self.s)
+            if served['B'] and served['C'] > cap_c:
+                break
+        self.assertGreater(served['B'], 0)                    # the refused waiter recovers
+        self.assertGreater(served['C'], cap_c)                # and the peer keeps progressing
+
     def test_full_prefix_hit_is_not_blocked_as_cold_prefill(self):
         self.p.begin_step(self.s)
         self.p.credit = -10
@@ -461,8 +492,15 @@ def installation_tests():
     if src is None:
         raise SystemExit('Set GLM53_SCHEDULER_PY_SRC to the pinned scheduler source')
     image = src.read_text()
-    found = mod._identify(image)
-    clean = image if found is None else found[1]
+    current = None
+    if mod.MARK_V7 in image:
+        # An already-current v7 install: verify it exactly (as main() does), then unpatch.
+        clean, _, _ = mod._unpatch(image, 'v7', mod.MARK_V7, mod.CLASS_HEAD, mod.V7_PAIRS,
+                                   exact=mod._helper_text())
+        found, current = None, image
+    else:
+        found = mod._identify(image)
+        clean = image if found is None else found[1]
     assert mod.MARK_V7 not in clean and mod.CLASS_HEAD not in clean
 
     fixtures = ROOT / 'tests' / 'fixtures'
@@ -483,11 +521,19 @@ def installation_tests():
         return text
 
     producers = {'pristine': clean, 'v1': legacy_producer(1), 'v2': legacy_producer(2)}
+    image_helper = load_fixture('v1_image_helper', fixtures / 'decode_floor_producers' / 'v1_image_d9758a6_helper.py')
+    v1_image = clean.replace(mod.NEEDLE, image_helper.HELPER + mod.NEEDLE, 1)
+    for new, old, label in mod.V1_PAIRS:
+        v1_image = mod.replace_once(v1_image, old, new, label)
+    producers['v1-image-d9758a6'] = v1_image
     if found is not None:
         producers[found[0]] = image
-    for ident, fname in (('v5-main', 'v5_main_d5713ec6.py'), ('v5-priority', 'v5_priority_763bd30e.py')):
-        producers[ident] = load_fixture('producer_' + ident.replace('-', '_'),
-                                        fixtures / 'decode_floor_producers' / fname).apply_v5(clean)
+    # Byte-exact public producers of every other non-v7 identity the installer accepts.
+    for ident, fname in (('v5-historical', 'v5_historical_8e2a32b2.py'), ('v5-main', 'v5_main_d5713ec6.py'),
+                         ('v5-priority', 'v5_priority_763bd30e.py'), ('v6-warm-deadline', 'v6_warm_deadline_1f74558d.py'),
+                         ('v6-carry', 'v6_carry_0870fab9.py')):
+        producer = load_fixture('producer_' + ident.replace('-', '_'), fixtures / 'decode_floor_producers' / fname)
+        producers[ident] = (getattr(producer, 'apply_v6', None) or producer.apply_v5)(clean)
 
     def run(text, temp):
         target = Path(temp) / 'scheduler.py'
@@ -511,6 +557,11 @@ def installation_tests():
             assert after == installed, f'{ident} did not migrate to the fresh-install bytes'
             again, repeat = run(after, temp)
             assert again.returncode == 0 and repeat == after and 'already present' in again.stdout, ident
+
+        if current is not None:
+            assert current == installed, 'the installed v7 differs from a fresh install'
+            again, repeat = run(current, temp)
+            assert again.returncode == 0 and repeat == current and 'already present' in again.stdout
 
         v5 = producers['v5-priority']
         refused = {
