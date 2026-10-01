@@ -34,6 +34,17 @@ HELPERS = {}
 # compares its rebuilds against these, so the installer's hook tables are checked
 # against recorded history rather than against themselves.
 PINNED_CLEAN_SHA256 = '097be6dc0c82371f17c64d05db8f012095fcccfb958299cea8b0bc940405e3a6'
+
+# Independent record of each legacy version's hook insertions (the installer's
+# V1/V2/V5/V6 pair tables, as sha256 of their JSON form). Checked unconditionally,
+# with no scheduler source needed, so a changed table cannot silently rewrite
+# both the migration and the test input that is supposed to check it.
+HOOK_TABLE_DIGESTS = {
+    'v1': 'd4eb922526f9d7945ccf9e468383707a638536a86d3fa9a6fa755d790ef63339',
+    'v2': '2813e9969de28e6b5aedb98bfb010914f6f3746c2fb5e52b993480be8730fa5c',
+    'v5': '02def284d1ae0c5491063dd9c914bfb0ad3a9d26e8ed7784eeea850ccb1b7893',
+    'v6': '3597f2869c66f6e7cea9892bc95325146293ab6bfd3b5da7031ded482e75d67c',
+}
 SOURCE_DIGESTS = {
     'v1': 'cd0bd6678c0b74a73e49ae78fe86517adc5ef5b136aa96686e1ee99d4a1b691c',
     'v2': 'd8acecff7eb214e64c9ce728d237656a6334af7fe4dba704d56ef438a9719412',

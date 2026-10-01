@@ -7,6 +7,7 @@ import hashlib
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -483,6 +484,21 @@ class FairTests(unittest.TestCase):
         self.assertEqual(ns['input_budget'], 0)
 
 
+def hook_table_digests_check(legacy):
+    """The installer's legacy hook tables must match their independently recorded digests."""
+    for version, table in (('v1', mod.V1_PAIRS), ('v2', mod.V2_PAIRS), ('v5', mod.V5_PAIRS), ('v6', mod.V6_PAIRS)):
+        got = hashlib.sha256(json.dumps([list(t) for t in table]).encode()).hexdigest()
+        assert got == legacy.HOOK_TABLE_DIGESTS[version], f'{version} hook table differs from its recorded digest'
+
+
+class HookTableDigests(unittest.TestCase):
+    def test_legacy_hook_tables_match_recorded_digests(self):
+        spec = importlib.util.spec_from_file_location('legacy_scheduler_helpers_digests', FIXTURES / 'legacy_scheduler_helpers.py')
+        legacy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(legacy)
+        hook_table_digests_check(legacy)
+
+
 def installation_tests():
     """Installer contract for decode-floor v7 (#283; integrates #246/#221/#180).
 
@@ -498,13 +514,18 @@ def installation_tests():
     if src is None:
         raise SystemExit('Set GLM53_SCHEDULER_PY_SRC to the pinned scheduler source')
     image = src.read_text()
-    current = None
+    current = found = None
     if mod.MARK_V7 in image:
-        # An already-current v7 install: verify it exactly (as main() does), then unpatch.
-        clean, current_at, _ = mod._unpatch(image, 'v7', mod.MARK_V7, mod.CLASS_HEAD, mod.V7_PAIRS,
-                                            exact=mod._helper_text())
-        found, current = None, image
-    else:
+        # An already-current v7 install verifies exactly (as main() does); any other
+        # v7-marked source falls back to legacy identification, also as main() does
+        # (the accepted pre-release v7 identities carry the same marker).
+        try:
+            clean, current_at, _ = mod._unpatch(image, 'v7', mod.MARK_V7, mod.CLASS_HEAD, mod.V7_PAIRS,
+                                                exact=mod._helper_text())
+            current = image
+        except SystemExit:
+            pass
+    if current is None:
         found = mod._identify(image)
         clean = image if found is None else found[1]
     assert mod.MARK_V7 not in clean and mod.CLASS_HEAD not in clean
@@ -535,6 +556,7 @@ def installation_tests():
         return text
 
     producers = {'pristine': clean, **{ident: producer(ident) for ident in helpers}}
+    hook_table_digests_check(legacy)
     # On the pinned source, every rebuilt legacy install must match its recorded digest:
     # this checks the installer's hook tables against history, not against themselves.
     on_pinned = hashlib.sha256(clean.encode()).hexdigest() == legacy.PINNED_CLEAN_SHA256
@@ -553,8 +575,6 @@ def installation_tests():
             assert hashlib.sha256(text.encode()).hexdigest() != legacy.SOURCE_DIGESTS[ident], f'{ident}: digest check is blind to a wrong hook'
     else:
         print('note: scheduler source is not the pinned image source; recorded legacy digests not compared')
-    if found is not None:
-        producers[found[0]] = image
 
     def run(text, temp):
         target = Path(temp) / 'scheduler.py'
@@ -585,6 +605,15 @@ def installation_tests():
             assert current == mod.apply_v7(clean, at=current_at), 'the installed v7 is not canonical'
             again, repeat = run(current, temp)
             assert again.returncode == 0 and repeat == current and 'already present' in again.stdout
+        if found is not None:
+            # A supplied legacy install (any accepted identity, including the pre-release v7
+            # ones) migrates in place: expect the v7 helper at the legacy helper's position.
+            ident, found_clean, found_at = found
+            result, after = run(image, temp)
+            assert result.returncode == 0 and f'from {ident}' in result.stdout, (ident, result.stderr)
+            assert after == mod.apply_v7(found_clean, at=found_at), f'{ident}: migration did not keep the helper position'
+            again, repeat = run(after, temp)
+            assert again.returncode == 0 and repeat == after and 'already present' in again.stdout, ident
 
         # Composition with patch_adaptive_k, which inserts its class at the same anchor:
         # the helper may sit before it (decode-floor applied first, as deployed) or after
@@ -603,6 +632,17 @@ def installation_tests():
         for layout, text in (('helper-after-adaptive-k', helper_after), ('helper-before-adaptive-k', helper_before)):
             again, repeat = run(text, temp)
             assert again.returncode == 0 and repeat == text and 'already present' in again.stdout, layout
+        # A legacy install migrates in place in either layout: the v7 helper takes the
+        # legacy helper's position (public v5-main fixture, so no private source needed).
+        for layout, at in (('legacy-after-adaptive-k', None), ('legacy-before-adaptive-k', adaptive_at)):
+            legacy_src = (with_adaptive[:at] + helpers['v5-main'] + with_adaptive[at:] if at is not None
+                          else with_adaptive.replace(mod.NEEDLE, helpers['v5-main'] + mod.NEEDLE, 1))
+            for new, old, label in pairs['v5-main']:
+                legacy_src = mod.replace_once(legacy_src, old, new, label)
+            result, after = run(legacy_src, temp)
+            assert result.returncode == 0 and 'from v5-main' in result.stdout, (layout, result.stderr)
+            expected = mod.apply_v7(with_adaptive, at=at) if at is not None else mod.apply_v7(with_adaptive)
+            assert after == expected, f'{layout}: migration did not keep the helper position'
 
         v5 = producers['v5-priority']
         refused = {
