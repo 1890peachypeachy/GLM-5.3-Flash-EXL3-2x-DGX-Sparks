@@ -1388,6 +1388,10 @@ def _identify(text: str):
             reasons.append(str(exc).split("scheduler: ", 1)[-1])
             continue
         _round_trip(text, clean, start, span, pairs, name)
+        # Every legacy helper uses `os`; the import is part of the applied state and
+        # must be present before a legacy identity is accepted for migration.
+        if "import os\n" not in text.split("import time\n", 1)[0]:
+            _refuse(f"{name}: import drifted")
         return name, clean, start
     _refuse(f"no authenticated identity for {marker}: " + " | ".join(reasons))
 

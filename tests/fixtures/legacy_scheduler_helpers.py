@@ -28,6 +28,23 @@ from __future__ import annotations
 
 HELPERS = {}
 
+# Independent record of each reconstructed legacy install on the pinned scheduler
+# source (image ef9f5013 with its baked v1 helper removed), i.e. helper text at the
+# installer's anchor plus that version's hook insertions. The installation test
+# compares its rebuilds against these, so the installer's hook tables are checked
+# against recorded history rather than against themselves.
+PINNED_CLEAN_SHA256 = '097be6dc0c82371f17c64d05db8f012095fcccfb958299cea8b0bc940405e3a6'
+SOURCE_DIGESTS = {
+    'v1': 'cd0bd6678c0b74a73e49ae78fe86517adc5ef5b136aa96686e1ee99d4a1b691c',
+    'v2': 'd8acecff7eb214e64c9ce728d237656a6334af7fe4dba704d56ef438a9719412',
+    'v5-historical': '437ea4c1c6eb7510d29d049d74c24dfdde7f2e0f2ebf5e0025b8a576eb51bf57',
+    'v1-image-d9758a6': 'f8c8b15b5d33ec2cd4eee73d07ecea7957a7ac6692e74485f50aa3449ce1285f',
+    'v5-main': '62669979a25b721a0918a0d10e1982db9d6772279e42cb10cddff5727e480266',
+    'v5-priority': '82d0846d6eefcf314d754e1682767f82f00d1b55bacac68e62fe53f1d47eb2eb',
+    'v6-warm-deadline': 'e479072623c18d59a062e4865e84f3b8a32e98a3e7469eced03de9c5bc0ef066',
+    'v6-carry': '46c006b04df827d48416c31d0e2cf4c393e9875b493f70dbb5fd43334302aef0',
+}
+
 HELPERS[1] = r'''
 def _glm53_mixed_prefill_policy(running, current):
     """Mixed-step prefill policy when a peer in `running` is decoding.

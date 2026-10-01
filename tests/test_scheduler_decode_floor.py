@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import contextlib
 import importlib.util
 import io
@@ -28,6 +29,11 @@ if PATCH is None:
         + ', '.join(str(p) for p in _PATCH_CANDIDATES)
         + ')'
     )
+_FIXTURE_CANDIDATES = (HERE / 'fixtures', ROOT / 'tests' / 'fixtures')  # image layout, then checkout
+FIXTURES = next((p for p in _FIXTURE_CANDIDATES if (p / 'legacy_scheduler_helpers.py').is_file()), None)
+if FIXTURES is None:
+    raise SystemExit('missing fixtures/legacy_scheduler_helpers.py (tried '
+                     + ', '.join(str(p) for p in _FIXTURE_CANDIDATES) + ')')
 spec = importlib.util.spec_from_file_location('glm53_decode_floor', PATCH)
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
@@ -503,8 +509,6 @@ def installation_tests():
         clean = image if found is None else found[1]
     assert mod.MARK_V7 not in clean and mod.CLASS_HEAD not in clean
 
-    fixtures = ROOT / 'tests' / 'fixtures'
-
     def load_fixture(name, path):
         spec = importlib.util.spec_from_file_location(name, path)
         module = importlib.util.module_from_spec(spec)
@@ -512,7 +516,7 @@ def installation_tests():
         spec.loader.exec_module(module)
         return module
 
-    legacy = load_fixture('legacy_scheduler_helpers', fixtures / 'legacy_scheduler_helpers.py')
+    legacy = load_fixture('legacy_scheduler_helpers', FIXTURES / 'legacy_scheduler_helpers.py')
 
     # Every accepted public identity, rebuilt from its byte-exact helper text at the
     # installer's anchor plus that version's hook pairs (the installer authenticates
@@ -531,6 +535,24 @@ def installation_tests():
         return text
 
     producers = {'pristine': clean, **{ident: producer(ident) for ident in helpers}}
+    # On the pinned source, every rebuilt legacy install must match its recorded digest:
+    # this checks the installer's hook tables against history, not against themselves.
+    on_pinned = hashlib.sha256(clean.encode()).hexdigest() == legacy.PINNED_CLEAN_SHA256
+    if on_pinned:
+        for ident in helpers:
+            got = hashlib.sha256(producers[ident].encode()).hexdigest()
+            assert got == legacy.SOURCE_DIGESTS[ident], f'{ident}: rebuilt install differs from its recorded bytes'
+        # Sensitivity: a wrong hook insertion must be caught by that comparison.
+        for ident, table in (('v5-main', mod.V5_PAIRS), ('v6-carry', mod.V6_PAIRS)):
+            wrong = tuple((new.replace('_GLM53_MIXED.begin_step(self)', '_GLM53_MIXED.broken_begin_step(self)'), old, label)
+                          for new, old, label in table)
+            assert wrong != table, ident
+            text = clean.replace(mod.NEEDLE, helpers[ident] + mod.NEEDLE, 1)
+            for new, old, label in wrong:
+                text = mod.replace_once(text, old, new, label)
+            assert hashlib.sha256(text.encode()).hexdigest() != legacy.SOURCE_DIGESTS[ident], f'{ident}: digest check is blind to a wrong hook'
+    else:
+        print('note: scheduler source is not the pinned image source; recorded legacy digests not compared')
     if found is not None:
         producers[found[0]] = image
 
@@ -605,11 +627,17 @@ def installation_tests():
             # Only the import anchor or adaptive-K may follow the helper.
             'v7-unknown-text-after-helper': installed.replace(
                 mod.NEEDLE, 'class _Glm53OtherOverlay:\n    pass\n\n' + mod.NEEDLE, 1),
+            # The overlay's `import os` is part of the applied state: a legacy or current
+            # install missing it is drift, not something to repair in place.
+            **{f'{ident}-import-removed': text.replace('import os\n', '', 1)
+               for ident, text in (('v1-image-d9758a6', producers['v1-image-d9758a6']),
+                                   ('v5-main', producers['v5-main']), ('v7', installed))},
         }
         for case, text in refused.items():
             assert text != installed and text != v5, f'{case}: mutation did not apply'
             result, after = run(text, temp)
             assert result.returncode != 0 and after == text, f'{case} was not refused without writing'
+            assert 'refusing to rewrite' in result.stderr, f'{case}: not a deliberate refusal: {result.stderr[-200:]}'
     return installed
 
 
