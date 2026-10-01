@@ -1290,6 +1290,16 @@ def _followed_by_anchor(text: str, end: int) -> bool:
             or rest.startswith("\n" + ADAPTIVE_K_HEAD))
 
 
+# Any decode-floor marker (every version, including unknown ones) or any helper
+# name. A pristine scheduler contains none; neither do the sibling overlays.
+_LEFTOVER_TOKENS = (MARK.rstrip("]"), CLASS_HEAD, V1_HELPER_START,
+                    "_Glm53MixedPrefill", "_GLM53_MIXED", "_glm53_mixed_prefill_policy")
+
+
+def _leftover(text: str):
+    return next((t for t in _LEFTOVER_TOKENS if t in text), None)
+
+
 def _unpatch(text: str, name, marker, head_token, pairs, sha=None, length=None, exact=None):
     """Invert one identity: exact hook insertions, then its authenticated helper site.
 
@@ -1313,9 +1323,8 @@ def _unpatch(text: str, name, marker, head_token, pairs, sha=None, length=None, 
         _refuse(f"{name}: unexpected text between the helper and its anchor")
     clean = text[:start] + text[start + n:]
     # Fail closed on mixed state: after removing this identity, no decode-floor
-    # marker of any version and no helper definition of either form may remain.
-    if (marker in clean or head_token in clean or MARK.rstrip("]") in clean
-            or CLASS_HEAD in clean or V1_HELPER_START in clean):
+    # marker of any version and no helper definition or name may remain.
+    if marker in clean or head_token in clean or _leftover(clean):
         _refuse(f"{name}: marker or helper definition left after unpatch")
     return clean, start, span
 
@@ -1364,6 +1373,10 @@ def _identify(text: str):
     else:
         if CLASS_HEAD in text:
             _refuse("unmarked _Glm53MixedPrefill helper present")
+        token = _leftover(text)
+        if token is not None:
+            _refuse(f"unrecognized decode-floor state ({token!r} present); "
+                    "restore an authenticated/pristine scheduler first")
         return None
     reasons = []
     for name, mark, head, pairs, sha, length in IDENTITIES:

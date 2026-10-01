@@ -258,8 +258,9 @@ There were no git tags for 1.0.0–1.4.0; 1.5.0 is the first cut named as a rele
   - Installer migration follows #180's fail-closed contract. Pristine, v1, v2,
     v5 and v5+priority (the #221 layout on `main` until now) installations
     migrate to the same bytes as a fresh v7 install, and a re-apply is a
-    verified no-op. v3/v4, drifted, duplicated, marker-only and unmarked
-    helpers are refused without writing.
+    verified no-op. v3/v4 and unknown version markers, drifted, duplicated,
+    marker-only and unmarked helpers, and a duplicate policy wrapper are
+    refused without writing.
   - `overlay/patch_mamba_align_chunking.py` accepts decode-floor v7 as well
     as v5.
   - #180's concurrency canary (`tests/check_concurrent_agents.py`) and its CPU

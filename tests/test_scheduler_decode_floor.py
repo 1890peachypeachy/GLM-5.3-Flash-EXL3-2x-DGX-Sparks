@@ -495,8 +495,8 @@ def installation_tests():
     current = None
     if mod.MARK_V7 in image:
         # An already-current v7 install: verify it exactly (as main() does), then unpatch.
-        clean, _, _ = mod._unpatch(image, 'v7', mod.MARK_V7, mod.CLASS_HEAD, mod.V7_PAIRS,
-                                   exact=mod._helper_text())
+        clean, current_at, _ = mod._unpatch(image, 'v7', mod.MARK_V7, mod.CLASS_HEAD, mod.V7_PAIRS,
+                                            exact=mod._helper_text())
         found, current = None, image
     else:
         found = mod._identify(image)
@@ -559,9 +559,29 @@ def installation_tests():
             assert again.returncode == 0 and repeat == after and 'already present' in again.stdout, ident
 
         if current is not None:
-            assert current == installed, 'the installed v7 differs from a fresh install'
+            # A deployed v7 keeps its helper where it was installed (e.g. before a later
+            # overlay such as adaptive-K), so compare at that position, not the default anchor.
+            assert current == mod.apply_v7(clean, at=current_at), 'the installed v7 is not canonical'
             again, repeat = run(current, temp)
             assert again.returncode == 0 and repeat == current and 'already present' in again.stdout
+
+        # Composition with patch_adaptive_k, which inserts its class at the same anchor:
+        # the helper may sit before it (decode-floor applied first, as deployed) or after
+        # it, and both layouts verify as a no-op.
+        if mod.ADAPTIVE_K_HEAD in clean:  # a deployed source already carries the real class
+            with_adaptive = clean
+            adaptive_at = clean.index(mod.ADAPTIVE_K_HEAD)
+        else:
+            adaptive = mod.ADAPTIVE_K_HEAD + '  # [glm53-adaptive-k]\n    pass\n\n'
+            with_adaptive = clean.replace(mod.NEEDLE, adaptive + mod.NEEDLE, 1)
+            adaptive_at = with_adaptive.index(adaptive)
+        helper_after = mod.apply_v7(with_adaptive)
+        helper_before = mod.apply_v7(with_adaptive, at=adaptive_at)
+        assert helper_after.index(mod.CLASS_HEAD) > helper_after.index(mod.ADAPTIVE_K_HEAD)
+        assert helper_before.index(mod.CLASS_HEAD) < helper_before.index(mod.ADAPTIVE_K_HEAD)
+        for layout, text in (('helper-after-adaptive-k', helper_after), ('helper-before-adaptive-k', helper_before)):
+            again, repeat = run(text, temp)
+            assert again.returncode == 0 and repeat == text and 'already present' in again.stdout, layout
 
         v5 = producers['v5-priority']
         refused = {
@@ -578,6 +598,14 @@ def installation_tests():
             # Mixed state: a canonical v7 plus a leftover older marker must not verify.
             'v7-plus-v5-marker': mod.MARK_V5 + '\n' + installed,
             'v7-plus-v1-marker': installed + '\n' + mod.MARK + '\n',
+            # A later duplicate wrapper would rebind the global the hooks call.
+            'v7-plus-duplicate-wrapper': installed + '\n\ndef _glm53_mixed_prefill_policy(sched, request, computed=None):\n    return 0\n',
+            'pristine-plus-wrapper': clean + '\n\ndef _glm53_mixed_prefill_policy(sched, request, computed=None):\n    return 0\n',
+            # An unknown version is not pristine: refuse instead of installing beside it.
+            'unknown-marker-v99': '# [glm53-decode-floor:v99]\n' + clean,
+            # Only the import anchor or adaptive-K may follow the helper.
+            'v7-unknown-text-after-helper': installed.replace(
+                mod.NEEDLE, 'class _Glm53OtherOverlay:\n    pass\n\n' + mod.NEEDLE, 1),
         }
         for case, text in refused.items():
             assert text != installed and text != v5, f'{case}: mutation did not apply'
