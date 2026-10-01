@@ -514,26 +514,25 @@ def installation_tests():
 
     legacy = load_fixture('legacy_scheduler_helpers', fixtures / 'legacy_scheduler_helpers.py')
 
-    def legacy_producer(version):
-        text = clean.replace(mod.NEEDLE, legacy.HELPERS[version] + mod.NEEDLE, 1)
-        for new, old, label in (mod.V1_PAIRS if version == 1 else mod.V2_PAIRS):
+    # Every accepted public identity, rebuilt from its byte-exact helper text at the
+    # installer's anchor plus that version's hook pairs (the installer authenticates
+    # each by sha256 and length before migrating it).
+    pairs = {'v1': mod.V1_PAIRS, 'v1-image-d9758a6': mod.V1_PAIRS, 'v2': mod.V2_PAIRS,
+             'v5-historical': mod.V5_PAIRS, 'v5-main': mod.V5_PAIRS, 'v5-priority': mod.V5_PAIRS,
+             'v6-warm-deadline': mod.V6_PAIRS, 'v6-carry': mod.V6_PAIRS}
+    helpers = {'v1': legacy.HELPERS[1], 'v2': legacy.HELPERS[2], 'v5-historical': legacy.HELPERS[5],
+               **{k: legacy.HELPERS[k] for k in ('v1-image-d9758a6', 'v5-main', 'v5-priority',
+                                                 'v6-warm-deadline', 'v6-carry')}}
+
+    def producer(ident):
+        text = clean.replace(mod.NEEDLE, helpers[ident] + mod.NEEDLE, 1)
+        for new, old, label in pairs[ident]:
             text = mod.replace_once(text, old, new, label)
         return text
 
-    producers = {'pristine': clean, 'v1': legacy_producer(1), 'v2': legacy_producer(2)}
-    image_helper = load_fixture('v1_image_helper', fixtures / 'decode_floor_producers' / 'v1_image_d9758a6_helper.py')
-    v1_image = clean.replace(mod.NEEDLE, image_helper.HELPER + mod.NEEDLE, 1)
-    for new, old, label in mod.V1_PAIRS:
-        v1_image = mod.replace_once(v1_image, old, new, label)
-    producers['v1-image-d9758a6'] = v1_image
+    producers = {'pristine': clean, **{ident: producer(ident) for ident in helpers}}
     if found is not None:
         producers[found[0]] = image
-    # Byte-exact public producers of every other non-v7 identity the installer accepts.
-    for ident, fname in (('v5-historical', 'v5_historical_8e2a32b2.py'), ('v5-main', 'v5_main_d5713ec6.py'),
-                         ('v5-priority', 'v5_priority_763bd30e.py'), ('v6-warm-deadline', 'v6_warm_deadline_1f74558d.py'),
-                         ('v6-carry', 'v6_carry_0870fab9.py')):
-        producer = load_fixture('producer_' + ident.replace('-', '_'), fixtures / 'decode_floor_producers' / fname)
-        producers[ident] = (getattr(producer, 'apply_v6', None) or producer.apply_v5)(clean)
 
     def run(text, temp):
         target = Path(temp) / 'scheduler.py'
