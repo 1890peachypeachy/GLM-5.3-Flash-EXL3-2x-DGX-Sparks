@@ -60,8 +60,15 @@ df = _load("glm53_decode_floor_restart", PATCH)
 if ADAPTIVE_K.is_file():
     FOREIGN_HELPER = _load("glm53_adaptive_k_restart", ADAPTIVE_K).SCHED_HELPER
 else:
+    # Same shape as patch_adaptive_k's real SCHED_HELPER: a SINGLE leading
+    # newline. The installer's _followed_by_anchor tolerates 0 or 1 blank line
+    # between our helper and the adaptive-k class head (that is the layout the
+    # real overlay produces); a double newline here made the in-image fallback
+    # fail v7 verification with "helper site not authenticated" and killed the
+    # docker build, while the same test passed in a repo checkout where the
+    # real patch_adaptive_k.py exists. Byte-shape parity is the contract.
     FOREIGN_HELPER = (
-        "\n\nclass _Glm53AdaptiveK:  # [glm53-adaptive-k]\n"
+        "\nclass _Glm53AdaptiveK:  # [glm53-adaptive-k]\n"
         "    pass\n\n\n"
         "_GLM53_ADAPTIVE_K = _Glm53AdaptiveK()  # [glm53-adaptive-k]\n\n\n"
     )
